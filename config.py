@@ -21,7 +21,7 @@ class Config:
     
     # Proxy settings - MULTIPLE SOURCES
     PROXY_REFRESH_INTERVAL = 1800  # 30 menit
-    PROXY_URLS = [
+    PROXY_URL = [
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
         "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
         "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
