@@ -1,9 +1,8 @@
-# proxy_manager.py - Dioptimalkan
+# proxy_manager.py - Fix attribute name
 import threading
 import time
 import random
 import requests
-from queue import Queue
 from collections import defaultdict
 from config import Config
 
@@ -16,70 +15,109 @@ class ProxyManager:
         })
         self.lock = threading.Lock()
         self.running = True
-        self.last_refresh = 0
-        self.working_proxy_cache = None  # Cache proxy yang sedang aktif
-        self.working_proxy_time = 0
         
-        # Weight settings
         self.min_weight = 0.1
         self.max_weight = 3.0
         
         # Download initial proxies
         self.download_proxies()
-        
-        # Mulai thread auto-refresh background
         self.start_auto_refresh()
     
     def download_proxies(self):
-        """Download proxy list dari GitHub"""
-        try:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(
-                Config.PROXY_URL, 
-                headers=headers, 
-                timeout=30, 
-                verify=False
-            )
+        """Download proxy dari multiple sources"""
+        all_proxies = []
+        
+        # Cek apakah menggunakan PROXY_URLS (multiple) atau PROXY_URL (single)
+        if hasattr(Config, 'PROXY_URLS'):
+            proxy_sources = Config.PROXY_URLS
+        elif hasattr(Config, 'PROXY_URL'):
+            proxy_sources = [Config.PROXY_URL]
+        else:
+            # Fallback default
+            proxy_sources = [
+                "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+                "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+                "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+            ]
+        
+        for proxy_url in proxy_sources:
+            try:
+                print(f"[*] Downloading proxies from: {proxy_url.split('/')[-1][:50]}")
+                headers = {"User-Agent": "Mozilla/5.0"}
+                response = requests.get(proxy_url, headers=headers, timeout=30, verify=False)
+                
+                if response.status_code == 200:
+                    proxies = [line.strip() for line in response.text.split('\n') if line.strip()]
+                    
+                    # Filter hanya HTTP/HTTPS proxy
+                    http_proxies = []
+                    for p in proxies:
+                        if '://' in p:
+                            # Already has protocol
+                            if 'http' in p.lower() or 'https' in p.lower():
+                                http_proxies.append(p)
+                        else:
+                            # Add http:// prefix
+                            http_proxies.append(f"http://{p}")
+                    
+                    all_proxies.extend(http_proxies)
+                    print(f"    ✓ Got {len(http_proxies)} HTTP proxies")
+                else:
+                    print(f"    ✗ Failed: Status {response.status_code}")
+                    
+            except Exception as e:
+                print(f"    ✗ Error: {str(e)[:50]}")
+                continue
+        
+        # Tambahkan manual proxy jika ada
+        if hasattr(Config, 'MANUAL_PROXIES') and Config.MANUAL_PROXIES:
+            print(f"[*] Adding {len(Config.MANUAL_PROXIES)} manual proxies")
+            all_proxies.extend(Config.MANUAL_PROXIES)
+        
+        # Remove duplicates
+        all_proxies = list(set(all_proxies))
+        
+        # Filter hanya HTTP/HTTPS (pastikan tidak ada SOCKS)
+        filtered_proxies = []
+        for proxy in all_proxies:
+            if 'socks' not in proxy.lower():
+                filtered_proxies.append(proxy)
+        
+        all_proxies = filtered_proxies
+        
+        with self.lock:
+            # Reset stats untuk proxy baru
+            old_proxies = set(self.proxy_list)
+            new_proxies = set(all_proxies)
             
-            if response.status_code == 200:
-                proxies = [line.strip() for line in response.text.split('\n') if line.strip()]
-                valid_proxies = [p for p in proxies if '://' in p]
-                
-                with self.lock:
-                    # Reset stats untuk proxy baru
-                    old_proxies = set(self.proxy_list)
-                    new_proxies = set(valid_proxies)
-                    
-                    # Hapus proxy yang tidak ada di list baru
-                    for proxy in old_proxies - new_proxies:
-                        if proxy in self.proxy_stats:
-                            del self.proxy_stats[proxy]
-                    
-                    # Tambah proxy baru
-                    self.proxy_list = valid_proxies
-                    for proxy in new_proxies - old_proxies:
-                        self.proxy_stats[proxy] = {
-                            'success': 0, 'fail': 0, 'total_time': 0,
-                            'avg_time': 1.0, 'weight': 1.0, 'last_used': 0
-                        }
-                
-                print(f"[+] Proxy Manager: {len(valid_proxies)} proxies loaded")
-                return valid_proxies
-                
-        except Exception as e:
-            print(f"[-] Proxy download error: {str(e)[:50]}")
-            return self.proxy_list
+            # Hapus proxy yang tidak ada di list baru
+            for proxy in old_proxies - new_proxies:
+                if proxy in self.proxy_stats:
+                    del self.proxy_stats[proxy]
+            
+            # Update proxy list
+            self.proxy_list = all_proxies
+            
+            # Tambah stats untuk proxy baru
+            for proxy in new_proxies - old_proxies:
+                self.proxy_stats[proxy] = {
+                    'success': 0, 'fail': 0, 'total_time': 0,
+                    'avg_time': 1.0, 'weight': 1.0, 'last_used': 0
+                }
+        
+        print(f"\n[+] Total HTTP/HTTPS proxies: {len(all_proxies)}")
+        return all_proxies
     
     def refresh_proxies_background(self):
-        """Refresh proxy di background tanpa mengganggu proses utama"""
+        """Refresh proxy di background"""
         while self.running:
             time.sleep(Config.PROXY_REFRESH_INTERVAL)
-            print("\n[*] Refreshing proxy list in background...")
+            print("\n[*] Refreshing proxy list...")
             self.download_proxies()
-            print(f"[+] Proxy refreshed: {len(self.proxy_list)} proxies available")
+            print(f"[+] Proxy count: {len(self.proxy_list)}")
     
     def start_auto_refresh(self):
-        """Mulai thread auto-refresh background"""
+        """Mulai thread auto-refresh"""
         refresh_thread = threading.Thread(target=self.refresh_proxies_background, daemon=True)
         refresh_thread.start()
     
@@ -113,7 +151,7 @@ class ProxyManager:
                 stats['weight'] = max(self.min_weight, min(self.max_weight, weight))
     
     def get_proxy(self):
-        """Dapatkan proxy dengan weighted selection (tanpa testing)"""
+        """Dapatkan proxy dengan weighted selection"""
         with self.lock:
             if not self.proxy_list:
                 return None
@@ -151,9 +189,7 @@ class ProxyManager:
         print("="*60)
         
         with self.lock:
-            # Count active proxies
-            active_proxies = len(self.proxy_list)
-            print(f"Total proxies: {active_proxies}")
+            print(f"Total proxies: {len(self.proxy_list)}")
             
             # Show top 10
             sorted_proxies = sorted(
@@ -168,7 +204,7 @@ class ProxyManager:
                     total = stats['success'] + stats['fail']
                     if total > 0:
                         success_rate = (stats['success'] / total) * 100
-                        print(f"  {proxy[:60]} | Rate: {success_rate:.0f}% | W: {stats['weight']:.2f}")
+                        print(f"  {proxy[:60]} | S: {stats['success']} | F: {stats['fail']} | Rate: {success_rate:.0f}%")
     
     def cleanup(self):
         """Bersihkan resources"""
